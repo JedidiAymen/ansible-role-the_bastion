@@ -21,9 +21,15 @@ jobs:
           cache: pip
 
       - name: Install AnsibleGuard from its PR branch
-        run: >-
-          pip install
-          "git+https://github.com/Narjes-b/AnsibleChecklist.git@sarif-validation-support"
+        env:
+          ANSIBLEGUARD_READ_TOKEN: ${{ secrets.ANSIBLEGUARD_READ_TOKEN }}
+        run: |
+          if test -z "$ANSIBLEGUARD_READ_TOKEN"; then
+            echo '::error::Set a fine-grained, read-only ANSIBLEGUARD_READ_TOKEN secret because the AnsibleGuard repository is private.'
+            exit 1
+          fi
+          pip install \
+            "git+https://x-access-token:${ANSIBLEGUARD_READ_TOKEN}@github.com/Narjes-b/AnsibleChecklist.git@sarif-validation-support"
 
       - name: Install GitLeaks
         run: ansibleguard install-tools
@@ -80,7 +86,7 @@ jobs:
           PY
 
       - name: Publish readable PR summary
-        if: always()
+        if: always() && hashFiles('ansibleguard-head/summary/summary.csv') != ''
         run: |
           echo '## AnsibleGuard isolated PR demonstration' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
@@ -95,7 +101,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload complete reports
-        if: always()
+        if: always() && hashFiles('ansibleguard-head/findings.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: ansibleguard-isolated-pr-demo
