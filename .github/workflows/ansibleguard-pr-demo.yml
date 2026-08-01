@@ -37,7 +37,7 @@ jobs:
           ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes"
           pip install \
-            "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@a86184d89055245df8bb288b59d8cf7c0ccaa702"
+            "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@040b788aee481c377945acadb4f33dc4f103b502"
           python -m spacy download en_core_web_lg
           python -c "import nltk; nltk.download('wordnet', quiet=True)"
 
