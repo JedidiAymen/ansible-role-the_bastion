@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   ansibleguard:
@@ -37,7 +38,7 @@ jobs:
           ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes"
           pip install \
-            "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@9a9392ec067cf4ad90f43137c7274f8e8e0bca29"
+            "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@5f3279808985324fd76d3b1c297e707c067af515"
           python -m spacy download en_core_web_lg
           python -c "import nltk; nltk.download('wordnet', quiet=True)"
 
@@ -95,6 +96,13 @@ jobs:
           raise SystemExit(1 if policy["conclusion"] == "failure" else 0)
           PY
 
+      - name: Publish introduced PR annotations
+        if: always() && hashFiles('ansibleguard-pr-decision.json') != ''
+        run: >-
+          ansibleguard-pr-annotations ansibleguard-pr-decision.json
+          --limit 50
+          --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Publish readable PR summary
         if: always() && hashFiles('ansibleguard-head/summary/summary.csv') != ''
         run: |
@@ -109,6 +117,17 @@ jobs:
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           python -c "import json; p=json.load(open('ansibleguard-pr-decision.json')); print(json.dumps(p['policy'], indent=2))" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload canonical SARIF for PR code scanning
+        if: >-
+          always() &&
+          hashFiles('ansibleguard-head/canonical/findings.sarif') != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ansibleguard-head/canonical/findings.sarif
+          category: ansibleguard-pr-demo
 
       - name: Upload complete reports
         if: always() && hashFiles('ansibleguard-head/findings.json') != ''
