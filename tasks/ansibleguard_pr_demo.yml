@@ -1,0 +1,21 @@
+---
+# Intentional mistakes for the isolated AnsibleGuard PR demonstration.
+# This file is never proposed to the upstream Adfinis repository.
+
+- ansible.builtin.shell: chmod 777 /tmp/ansibleguard-demo
+  ignore_errors: true
+
+- name: Download demo content without certificate verification
+  ansible.builtin.get_url:
+    url: https://example.invalid/demo.txt
+    dest: /tmp/ansibleguard-demo.txt
+    mode: "0777"
+    validate_certs: false
+
+- name: Store a deliberately hardcoded demo password
+  ansible.builtin.set_fact:
+    demo_admin_password: "AnsibleGuardDemoPassword123!"
+
+- name: Print the demo password without log protection
+  ansible.builtin.debug:
+    msg: "Demo password is {{ demo_admin_password }}"
