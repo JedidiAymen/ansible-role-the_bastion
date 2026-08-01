@@ -38,6 +38,8 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes"
           pip install \
             "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@a86184d89055245df8bb288b59d8cf7c0ccaa702"
+          python -m spacy download en_core_web_lg
+          python -c "import nltk; nltk.download('wordnet', quiet=True)"
 
       - name: Install GitLeaks
         run: ansibleguard install-tools
