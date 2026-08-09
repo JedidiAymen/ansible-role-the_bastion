@@ -1,0 +1,169 @@
+name: AnsibleGuard isolated PR demo
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  ansibleguard:
+    name: AnsibleGuard / public SARIF validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned AnsibleGuard private snapshot
+        env:
+          ANSIBLEGUARD_DEPLOY_KEY: ${{ secrets.ANSIBLEGUARD_DEPLOY_KEY }}
+        run: |
+          if test -z "$ANSIBLEGUARD_DEPLOY_KEY"; then
+            echo '::error::Set the repository-scoped read-only ANSIBLEGUARD_DEPLOY_KEY secret because the AnsibleGuard repository is private.'
+            exit 1
+          fi
+
+          key_file="$RUNNER_TEMP/ansibleguard-deploy-key"
+          trap 'rm -f "$key_file"' EXIT
+          install -m 600 /dev/null "$key_file"
+          printf '%s\n' "$ANSIBLEGUARD_DEPLOY_KEY" > "$key_file"
+          install -m 700 -d "$HOME/.ssh"
+          ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes"
+          pip install \
+            "git+ssh://git@github.com/JedidiAymen/ansibleguard-private.git@f6c8c626c09ae82af58a76457831ec1b23c22543"
+          python -m spacy download en_core_web_lg
+          python -c "import nltk; nltk.download('wordnet', quiet=True)"
+
+      - name: Install GitLeaks
+        run: ansibleguard install-tools
+
+      - name: Scan PR head
+        env:
+          ANSIBLEGUARD_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ANSIBLEGUARD_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ansibleguard . --output ansibleguard-head --profile pr --fail-on never
+
+      - name: Scan PR base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_TREE: ${{ runner.temp }}/ansibleguard-base
+          ANSIBLEGUARD_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ANSIBLEGUARD_HEAD_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add --detach "$BASE_TREE" "$BASE_SHA"
+          ansibleguard "$BASE_TREE" \
+            --output ansibleguard-base \
+            --profile pr \
+            --fail-on never
+
+      - name: Compare canonical base and head occurrences
+        id: compare
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          from ansibleguard.report.comparison import compare_occurrences, evaluate_policy
+
+          def load(path):
+              payload = json.loads(pathlib.Path(path).read_text())
+              return payload.get("items", []) if isinstance(payload, dict) else payload
+
+          comparison = compare_occurrences(
+              load("ansibleguard-base/canonical/occurrences.json"),
+              load("ansibleguard-head/canonical/occurrences.json"),
+          )
+          policy = evaluate_policy(comparison, "observe")
+          payload = {
+              "schema_version": 2,
+              "kind": "pr-comparison",
+              "comparison": comparison,
+              "policy": policy,
+          }
+          pathlib.Path("ansibleguard-pr-decision.json").write_text(
+              json.dumps(payload, indent=2)
+          )
+          raise SystemExit(1 if policy["conclusion"] == "failure" else 0)
+          PY
+
+      - name: Publish introduced PR annotations
+        if: always() && hashFiles('ansibleguard-pr-decision.json') != ''
+        run: >-
+          ansibleguard-pr-annotations ansibleguard-pr-decision.json
+          --limit 50
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish readable PR summary
+        if: always() && hashFiles('ansibleguard-head/summary/summary.csv') != ''
+        run: |
+          echo '## AnsibleGuard isolated PR demonstration' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Head summary' >> "$GITHUB_STEP_SUMMARY"
+          echo '```csv' >> "$GITHUB_STEP_SUMMARY"
+          head -n 21 ansibleguard-head/summary/summary.csv >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Base/head policy decision' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          python -c "import json; p=json.load(open('ansibleguard-pr-decision.json')); print(json.dumps(p['policy'], indent=2))" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload canonical SARIF for PR code scanning
+        if: >-
+          always() &&
+          hashFiles('ansibleguard-head/canonical/findings.sarif') != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ansibleguard-head/canonical/findings.sarif
+          category: ansibleguard-pr-demo
+
+      - name: Upload complete reports
+        if: always() && hashFiles('ansibleguard-head/findings.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: ansibleguard-isolated-pr-demo
+          path: |
+            ansibleguard-head/
+            ansibleguard-base/
+            ansibleguard-pr-decision.json
+          if-no-files-found: error
+
+      - name: Enforce provider and observe policy
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          diagnostics = []
+          for path in (
+              pathlib.Path("ansibleguard-head/diagnostics.json"),
+              pathlib.Path("ansibleguard-base/diagnostics.json"),
+          ):
+              diagnostics.extend(json.loads(path.read_text()))
+          tool_errors = [item for item in diagnostics if item["status"] == "tool-error"]
+          if tool_errors:
+              raise SystemExit(f"Blocking {len(tool_errors)} provider tool error(s)")
+
+          decision = pathlib.Path("ansibleguard-pr-decision.json")
+          if not decision.exists():
+              raise SystemExit("PR comparison did not produce a decision")
+          policy = json.loads(decision.read_text())["policy"]
+          if policy["conclusion"] == "failure":
+              raise SystemExit(
+                  "Blocking occurrences: "
+                  + ", ".join(policy["blocking_occurrence_ids"])
+              )
+          PY
